@@ -1,0 +1,32 @@
+# configs/default.yaml
+# --------------------
+# Default hyperparameters for the two-tower retrieval model.
+# Override any section by passing a custom YAML to --config.
+
+seed: 42
+
+data:
+  processed_dir: data/processed
+  batch_size: 1024
+  num_workers: 4
+  pin_memory: true
+
+model:
+  emb_dim: 32          # embedding dim for each categorical feature
+  hidden_dim: 128      # MLP hidden layer size
+  output_dim: 64       # final L2-normalised embedding dim (both towers)
+  dropout: 0.1
+
+training:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  max_epochs: 10
+  temperature: 0.07    # InfoNCE / in-batch softmax temperature
+  patience: 5          # early-stopping patience (epochs)
+
+  trainer:
+    accelerator: auto  # "cpu", "gpu", or "auto"
+    devices: 1
+    log_every_n_steps: 50
+
+checkpoint_dir: checkpoints

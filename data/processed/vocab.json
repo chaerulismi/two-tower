@@ -1,0 +1,9 @@
+{
+  "num_users": 6040,
+  "num_movies": 3883,
+  "num_genders": 2,
+  "num_ages": 7,
+  "num_occupations": 21,
+  "num_year_buckets": 7,
+  "num_genres": 18
+}
