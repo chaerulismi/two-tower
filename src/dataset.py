@@ -68,38 +68,43 @@ class MovieLensDataset(Dataset):
     """
 
     def __init__(self, df: pd.DataFrame) -> None:
-        self.df = df.reset_index(drop=True)
+        n = len(df)
 
         # Identify genre columns
         self.genre_cols = sorted(
             [c for c in df.columns if c.startswith(GENRE_PREFIX)]
         )
 
-        # Pre-convert to numpy for fast indexing
-        self._user_idx = df["user_idx"].to_numpy(dtype=np.int64)
-        self._gender_idx = df["gender_idx"].to_numpy(dtype=np.int64)
-        self._age_idx = df["age_idx"].to_numpy(dtype=np.int64)
-        self._occupation_idx = df["occupation_idx"].to_numpy(dtype=np.int64)
+        # Pre-convert to tensors once — avoids per-sample torch.tensor() overhead
+        # .copy() ensures the numpy arrays are writable before conversion
+        self._user_idx = torch.from_numpy(df["user_idx"].to_numpy(dtype=np.int64, copy=True))
+        self._gender_idx = torch.from_numpy(df["gender_idx"].to_numpy(dtype=np.int64, copy=True))
+        self._age_idx = torch.from_numpy(df["age_idx"].to_numpy(dtype=np.int64, copy=True))
+        self._occupation_idx = torch.from_numpy(df["occupation_idx"].to_numpy(dtype=np.int64, copy=True))
 
-        self._movie_idx = df["movie_idx"].to_numpy(dtype=np.int64)
-        self._year_bucket = df["year_bucket"].to_numpy(dtype=np.int64)
-        self._genres = df[self.genre_cols].to_numpy(dtype=np.float32)  # (N, G)
+        self._movie_idx = torch.from_numpy(df["movie_idx"].to_numpy(dtype=np.int64, copy=True))
+        self._year_bucket = torch.from_numpy(df["year_bucket"].to_numpy(dtype=np.int64, copy=True))
+        self._genres = torch.from_numpy(
+            df[self.genre_cols].to_numpy(dtype=np.float32, copy=True)
+        )  # (N, G)
+
+        self._len = n
 
     def __len__(self) -> int:
-        return len(self.df)
+        return self._len
 
     def __getitem__(self, idx: int) -> Dict[str, Dict[str, Tensor]]:
         return {
             "user": {
-                "user_idx":       torch.tensor(self._user_idx[idx]),
-                "gender_idx":     torch.tensor(self._gender_idx[idx]),
-                "age_idx":        torch.tensor(self._age_idx[idx]),
-                "occupation_idx": torch.tensor(self._occupation_idx[idx]),
+                "user_idx":       self._user_idx[idx],
+                "gender_idx":     self._gender_idx[idx],
+                "age_idx":        self._age_idx[idx],
+                "occupation_idx": self._occupation_idx[idx],
             },
             "item": {
-                "movie_idx":   torch.tensor(self._movie_idx[idx]),
-                "year_bucket": torch.tensor(self._year_bucket[idx]),
-                "genres":      torch.from_numpy(self._genres[idx].copy()),  # (G,)
+                "movie_idx":   self._movie_idx[idx],
+                "year_bucket": self._year_bucket[idx],
+                "genres":      self._genres[idx],
             },
         }
 

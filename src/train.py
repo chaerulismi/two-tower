@@ -54,10 +54,11 @@ class TwoTowerModule(L.LightningModule):
         emb_dim: int = 32,
         hidden_dim: int = 128,
         output_dim: int = 64,
-        dropout: float = 0.1,
+        dropout: float = 0.2,
         temperature: float = 0.07,
         lr: float = 1e-3,
-        weight_decay: float = 1e-4,
+        weight_decay: float = 1e-3,
+        warmup_epochs: int = 3,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["vocab"])
@@ -108,10 +109,21 @@ class TwoTowerModule(L.LightningModule):
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        warmup_epochs = self.hparams.warmup_epochs
+        max_epochs = self.trainer.max_epochs
+
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.01, total_iters=warmup_epochs,
+        )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=self.trainer.max_epochs,
+            T_max=max(max_epochs - warmup_epochs, 1),
             eta_min=self.hparams.lr * 0.01,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs],
         )
         return {
             "optimizer": optimizer,
@@ -150,10 +162,11 @@ def train(cfg: Dict[str, Any]) -> TwoTowerModule:
         emb_dim=model_cfg.get("emb_dim", 32),
         hidden_dim=model_cfg.get("hidden_dim", 128),
         output_dim=model_cfg.get("output_dim", 64),
-        dropout=model_cfg.get("dropout", 0.1),
+        dropout=model_cfg.get("dropout", 0.2),
         temperature=train_cfg.get("temperature", 0.07),
         lr=train_cfg.get("lr", 1e-3),
-        weight_decay=train_cfg.get("weight_decay", 1e-4),
+        weight_decay=train_cfg.get("weight_decay", 1e-3),
+        warmup_epochs=train_cfg.get("warmup_epochs", 3),
     )
 
     # ── Callbacks ─────────────────────────────────────────────────────
@@ -179,9 +192,10 @@ def train(cfg: Dict[str, Any]) -> TwoTowerModule:
     # ── Trainer ───────────────────────────────────────────────────────
     trainer_cfg = train_cfg.get("trainer", {})
     trainer = L.Trainer(
-        max_epochs=train_cfg.get("max_epochs", 10),
+        max_epochs=train_cfg.get("max_epochs", 20),
         accelerator=trainer_cfg.get("accelerator", "auto"),
         devices=trainer_cfg.get("devices", 1),
+        precision=trainer_cfg.get("precision", "16-mixed"),
         log_every_n_steps=trainer_cfg.get("log_every_n_steps", 50),
         callbacks=callbacks,
         logger=logger,

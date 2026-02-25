@@ -30,7 +30,6 @@ Usage:
 
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -105,6 +104,41 @@ def retrieve_top_k(
 # Ranking metrics
 # ---------------------------------------------------------------------------
 
+def _build_relevance_matrix(
+    retrieved: List[List[int]],
+    ground_truth: List[List[int]],
+    k: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build a binary relevance matrix and mask for valid queries.
+
+    Returns:
+        rel:     (Q, k) binary array — 1 if retrieved[q][j] is relevant
+        gt_lens: (Q,) number of ground-truth items per query
+        mask:    (Q,) boolean — True for queries with non-empty ground truth
+    """
+    Q = len(retrieved)
+    rel = np.zeros((Q, k), dtype=np.float32)
+    gt_lens = np.zeros(Q, dtype=np.float32)
+
+    for i, (pred, gt) in enumerate(zip(retrieved, ground_truth)):
+        if not gt:
+            continue
+        relevant = set(gt)
+        gt_lens[i] = len(relevant)
+        for j, item in enumerate(pred[:k]):
+            if item in relevant:
+                rel[i, j] = 1.0
+
+    mask = gt_lens > 0
+    return rel, gt_lens, mask
+
+
+# Pre-compute discount factors up to a reasonable max K
+_MAX_PRECOMPUTE_K = 1000
+_DISCOUNTS = 1.0 / np.log2(np.arange(2, _MAX_PRECOMPUTE_K + 2, dtype=np.float64))
+
+
 def recall_at_k(
     retrieved: List[List[int]],
     ground_truth: List[List[int]],
@@ -116,14 +150,11 @@ def recall_at_k(
     Recall@K for a single query = |retrieved[:k] ∩ relevant| / |relevant|.
     Queries with no relevant items are skipped.
     """
-    scores = []
-    for pred, gt in zip(retrieved, ground_truth):
-        if not gt:
-            continue
-        top_k = set(pred[:k])
-        relevant = set(gt)
-        scores.append(len(top_k & relevant) / len(relevant))
-    return float(np.mean(scores)) if scores else 0.0
+    rel, gt_lens, mask = _build_relevance_matrix(retrieved, ground_truth, k)
+    if not mask.any():
+        return 0.0
+    hits = rel[mask].sum(axis=1)
+    return float((hits / gt_lens[mask]).mean())
 
 
 def ndcg_at_k(
@@ -140,20 +171,19 @@ def ndcg_at_k(
 
     Queries with no relevant items are skipped.
     """
-    scores = []
-    for pred, gt in zip(retrieved, ground_truth):
-        if not gt:
-            continue
-        relevant = set(gt)
-        dcg = sum(
-            1.0 / math.log2(r + 2)          # r is 0-indexed
-            for r, item in enumerate(pred[:k])
-            if item in relevant
-        )
-        ideal_hits = min(len(relevant), k)
-        idcg = sum(1.0 / math.log2(r + 2) for r in range(ideal_hits))
-        scores.append(dcg / idcg if idcg > 0 else 0.0)
-    return float(np.mean(scores)) if scores else 0.0
+    rel, gt_lens, mask = _build_relevance_matrix(retrieved, ground_truth, k)
+    if not mask.any():
+        return 0.0
+
+    discounts = _DISCOUNTS[:k]  # (k,)
+    dcg = (rel[mask] * discounts[np.newaxis, :]).sum(axis=1)
+
+    ideal_hits = np.minimum(gt_lens[mask], k).astype(int)
+    cumulative_discounts = np.cumsum(_DISCOUNTS[:k])
+    idcg = cumulative_discounts[ideal_hits - 1]
+
+    scores = np.where(idcg > 0, dcg / idcg, 0.0)
+    return float(scores.mean())
 
 
 def mrr_at_k(
@@ -170,18 +200,16 @@ def mrr_at_k(
 
     Queries with no relevant items are skipped.
     """
-    scores = []
-    for pred, gt in zip(retrieved, ground_truth):
-        if not gt:
-            continue
-        relevant = set(gt)
-        rr = 0.0
-        for r, item in enumerate(pred[:k]):
-            if item in relevant:
-                rr = 1.0 / (r + 1)
-                break
-        scores.append(rr)
-    return float(np.mean(scores)) if scores else 0.0
+    rel, gt_lens, mask = _build_relevance_matrix(retrieved, ground_truth, k)
+    if not mask.any():
+        return 0.0
+
+    rel_masked = rel[mask]
+    # Find first relevant position per query (argmax on binary gives first 1)
+    has_hit = rel_masked.any(axis=1)
+    first_pos = rel_masked.argmax(axis=1)  # 0-indexed
+    rr = np.where(has_hit, 1.0 / (first_pos + 1), 0.0)
+    return float(rr.mean())
 
 
 def compute_all_metrics(

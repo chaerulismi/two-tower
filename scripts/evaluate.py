@@ -50,6 +50,7 @@ def run_evaluation(
     ks: list[int],
     batch_size: int = 2048,
     device: str = "cpu",
+    index_dir: Path | None = None,
 ) -> dict[int, dict[str, float]]:
     from src.dataset import MovieLensDataModule
     from src.metrics import build_faiss_index, retrieve_top_k, compute_all_metrics
@@ -72,30 +73,39 @@ def run_evaluation(
     )
     module.eval().to(device)
 
-    # ── 2. Encode full item catalogue ─────────────────────────────────
-    log.info("Encoding item catalogue ...")
-    item_embeddings = []
-    item_ids_list = []
+    # ── 2. Load or encode item catalogue ─────────────────────────────
+    if index_dir and (index_dir / "faiss.index").exists():
+        import faiss
+        log.info("Loading pre-built FAISS index from %s", index_dir)
+        index = faiss.read_index(str(index_dir / "faiss.index"))
+        id_map = np.load(index_dir / "item_ids.npy")
+        log.info("Index loaded: %d items", index.ntotal)
+    else:
+        log.info("Encoding item catalogue ...")
+        item_embeddings = []
+        item_ids_list = []
 
-    with torch.no_grad():
-        for batch in dm.item_catalogue_dataloader(batch_size=batch_size):
-            item = {k: v.to(device) for k, v in batch["item"].items()}
-            emb = module.model.encode_item(item)
-            item_embeddings.append(emb.cpu().numpy())
-            item_ids_list.append(batch["item"]["movie_idx"].numpy())
+        with torch.no_grad():
+            for batch in dm.item_catalogue_dataloader(batch_size=batch_size):
+                item = {k: v.to(device) for k, v in batch["item"].items()}
+                emb = module.model.encode_item(item)
+                item_embeddings.append(emb.cpu().numpy())
+                item_ids_list.append(batch["item"]["movie_idx"].numpy())
 
-    item_embeddings = np.concatenate(item_embeddings, axis=0).astype(np.float32)
-    item_ids_arr = np.concatenate(item_ids_list, axis=0).astype(np.int64)
+        item_embeddings = np.concatenate(item_embeddings, axis=0).astype(np.float32)
+        item_ids_arr = np.concatenate(item_ids_list, axis=0).astype(np.int64)
 
-    log.info("Catalogue: %d items, dim=%d", len(item_embeddings), item_embeddings.shape[1])
+        log.info("Catalogue: %d items, dim=%d", len(item_embeddings), item_embeddings.shape[1])
 
-    index, id_map = build_faiss_index(item_embeddings, item_ids_arr)
+        index, id_map = build_faiss_index(item_embeddings, item_ids_arr)
 
     # ── 3. Build per-user ground truth from test set ──────────────────
     test_df = pd.read_parquet(processed_dir / "test.parquet")
-    user_gt: dict[int, list[int]] = defaultdict(list)
-    for _, row in test_df.iterrows():
-        user_gt[int(row["user_idx"])].append(int(row["movie_idx"]))
+    user_gt: dict[int, list[int]] = (
+        test_df.groupby("user_idx")["movie_idx"]
+        .apply(list)
+        .to_dict()
+    )
 
     unique_users = sorted(user_gt.keys())
     log.info("Evaluating on %d users from test set", len(unique_users))
@@ -173,6 +183,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=2048)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument(
+        "--index_dir",
+        type=Path,
+        default=None,
+        help="Optional path to pre-built FAISS index (from build_index.py)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -186,6 +202,7 @@ if __name__ == "__main__":
         ks=args.k,
         batch_size=args.batch_size,
         device=args.device,
+        index_dir=args.index_dir,
     )
 
     print("\n── Results ──────────────────────────────")
